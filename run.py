@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""容器/本地启动入口：python -I run.py"""
+"""容器/本地启动入口：python run.py（不要加 -I，隔离模式会移除脚本目录）。"""
 
 import os
 

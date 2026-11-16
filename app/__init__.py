@@ -8,15 +8,26 @@ import io
 import os
 import threading
 
-from flask import Flask, Response, flash, redirect, render_template, request, url_for
+from flask import (
+    Flask,
+    Response,
+    abort,
+    current_app,
+    flash,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
-from . import collector
+from . import collector, verify
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 DB_PATH = os.environ.get("DB_PATH", "/instance/fermenter.db")
 ENABLE_DEMO_RESET = os.environ.get("ENABLE_DEMO_RESET", "0") == "1"
 
 _collect_lock = threading.Lock()
+_verify_lock = threading.Lock()
 
 
 def create_app() -> Flask:
@@ -24,6 +35,8 @@ def create_app() -> Flask:
     app.secret_key = os.environ.get("SECRET_KEY", "fermenter-demo-secret-key")
     os.makedirs(DATA_DIR, exist_ok=True)
     collector.init_db(DB_PATH)
+    verify.init_db(DB_PATH)
+
     @app.get("/")
     def index():
         try:
@@ -37,6 +50,10 @@ def create_app() -> Flask:
         runs = collector.list_runs(DB_PATH)
         states = collector.list_file_states(DB_PATH)
         files = collector._scan_files(DATA_DIR)  # noqa: SLF001 - 展示用
+        reports = verify.list_reports(DB_PATH)
+        for report in reports:
+            report["status"] = verify.report_status(DB_PATH, DATA_DIR, report)
+        last_seq = verify.current_watermark(DB_PATH)["seq"]
         return render_template(
             "index.html",
             rows=rows,
@@ -46,6 +63,9 @@ def create_app() -> Flask:
             runs=runs,
             states=states,
             files=files,
+            reports=reports,
+            last_seq=last_seq,
+            max_records=verify.MAX_RECORDS,
             data_dir=DATA_DIR,
             demo_reset=ENABLE_DEMO_RESET,
         )
@@ -109,8 +129,54 @@ def create_app() -> Flask:
             flash("演示重置未开启（需 ENABLE_DEMO_RESET=1）。", "warning")
             return redirect(url_for("index"))
         collector.reset_all(DB_PATH, DATA_DIR)
-        flash("已清空数据库与挂载目录中的日志文件。", "success")
+        verify.clear_reports(DB_PATH)
+        flash("已清空数据库（含核验报告）与挂载目录中的日志文件。", "success")
         return redirect(url_for("index"))
+
+    @app.post("/verify")
+    def verify_records():
+        seq_from = request.form.get("seq_from", "").strip()
+        seq_to = request.form.get("seq_to", "").strip()
+        if not _verify_lock.acquire(blocking=False):
+            flash("已有一份核验正在执行，请稍后刷新查看结果。", "warning")
+            return redirect(url_for("index") + "#verify")
+        try:
+            report = verify.run_verification(DB_PATH, DATA_DIR, seq_from, seq_to)
+        except verify.VerificationError as exc:
+            flash(f"核验未发布：{exc}", "danger")
+            return redirect(url_for("index") + "#verify")
+        except Exception as exc:  # noqa: BLE001 - 失败也不能留下半份报告
+            current_app.logger.exception("核验内部错误")
+            flash(f"核验未发布：内部错误（{type(exc).__name__}: {exc}）。", "danger")
+            return redirect(url_for("index") + "#verify")
+        finally:
+            _verify_lock.release()
+        flash(
+            "核验报告 #{id} 已发布：核验 {n} 条，原文一致 {m}，同号异文 {d}，"
+            "无法核验 {x}。".format(
+                id=report["id"],
+                n=report["record_count"],
+                m=report["summary"]["match"],
+                d=report["summary"]["mismatch"],
+                x=report["summary"]["missing"],
+            ),
+            "success",
+        )
+        return redirect(url_for("verify_detail", report_id=report["id"]))
+
+    @app.get("/verify/<int:report_id>")
+    def verify_detail(report_id: int):
+        report = verify.get_report(DB_PATH, report_id)
+        if report is None:
+            abort(404)
+        status = verify.report_status(DB_PATH, DATA_DIR, report)
+        return render_template(
+            "verify_report.html",
+            report=report,
+            status=status,
+            data_dir=DATA_DIR,
+            max_records=verify.MAX_RECORDS,
+        )
 
     @app.get("/healthz")
     def healthz():

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>核验报告 #{{ report.id }} · 发酵罐温度质控</title>
+  <style>
+    :root { --line:#d8dee6; --bg:#f5f7fa; --ok:#1a7f37; --bad:#c0392b; --warn:#b7791f; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "PingFang SC","Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:#1f2933; }
+    header { background:#14385c; color:#fff; padding:18px 28px; }
+    header h1 { margin:0; font-size:20px; }
+    header p { margin:6px 0 0; font-size:13px; opacity:.8; }
+    header a { color:#cfe3ff; }
+    main { max-width:1180px; margin:22px auto; padding:0 18px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:20px; }
+    .card h2 { margin:0 0 12px; font-size:16px; color:#14385c; }
+    .banner { border-radius:8px; padding:12px 15px; margin-bottom:18px; font-size:14px; line-height:1.55; }
+    .banner.ok { background:#e7f5ec; color:var(--ok); border:1px solid #b6dfc2; }
+    .banner.stale { background:#fdf6e3; color:var(--warn); border:1px solid #ecd9a8; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { border-bottom:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+    th { background:#f0f4f8; font-weight:600; white-space:nowrap; }
+    td.mono, .mono { font-family: ui-monospace,Menlo,Consolas,monospace; }
+    .muted { color:#7b8794; font-size:12px; }
+    .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; white-space:nowrap; }
+    .pill.ok, .pill.match { background:#e7f5ec; color:var(--ok); }
+    .pill.rejected, .pill.mismatch { background:#fdecea; color:var(--bad); }
+    .pill.error, .pill.missing { background:#fdf6e3; color:var(--warn); }
+    .raw { max-width:360px; word-break:break-all; }
+    .diff { color:var(--bad); }
+    .summary { display:flex; gap:18px; flex-wrap:wrap; margin:6px 0 0; }
+    .summary div { background:#f0f4f8; border-radius:8px; padding:10px 16px; }
+    .summary b { display:block; font-size:22px; line-height:1.2; }
+    .summary span { font-size:12px; color:#616e7c; }
+    .kv { display:grid; grid-template-columns:170px 1fr; gap:6px 14px; font-size:13px; }
+    .kv dt { color:#616e7c; }
+    .kv dd { margin:0; }
+    code { background:#f0f4f8; padding:1px 5px; border-radius:4px; }
+    .toolbar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:16px; }
+    .btn-ghost { display:inline-block; background:#eef2f7; color:#14385c; border:1px solid var(--line);
+                 border-radius:8px; padding:9px 16px; font-size:13px; text-decoration:none; }
+    @media (max-width:900px) { .kv { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>核验报告 #{{ report.id }}</h1>
+  <p>生成于 {{ report.created_at }}　|　挂载目录：<code style="background:#234d75;color:#cfe3ff">{{ data_dir }}</code>
+     　|　<a href="{{ url_for('index') }}">← 返回质控首页</a></p>
+</header>
+<main>
+  <div class="toolbar">
+    <a class="btn-ghost" href="{{ url_for('index') }}">← 返回首页</a>
+    <span class="muted">本页可随时重读；报告内容固定不变。</span>
+  </div>
+
+  {% if status.fresh %}
+    <div class="banner ok">
+      <b>当前有效</b>：库内水位与两份日志的文件截面仍与生成时一致。
+    </div>
+  {% else %}
+    <div class="banner stale">
+      <b>已过期</b>：报告内容仍完整保留，但下列情况使其不再代表当前状态——
+      <ul style="margin:8px 0 0">
+        {% for reason in status.reasons %}<li>{{ reason }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>核验结果汇总</h2>
+    <div class="summary">
+      <div><b>{{ report.record_count }}</b><span>核验已入库记录（{{ report.range['from'] }}–{{ report.range['to'] }}）</span></div>
+      <div><b style="color:var(--ok)">{{ report.summary.match }}</b><span>原文一致</span></div>
+      <div><b style="color:var(--bad)">{{ report.summary.mismatch }}</b><span>同号异文</span></div>
+      <div><b style="color:var(--warn)">{{ report.summary.missing }}</b><span>没有对应完整行，无法核验</span></div>
+      <div><b>{{ report.db_gap_count }}</b><span>范围内库内缺失序号</span></div>
+    </div>
+    {% if report.db_gap_count %}
+      <p class="muted" style="margin-top:12px">
+        范围内有 {{ report.db_gap_count }} 个序号未入库，未纳入逐条核验
+        {% if report.db_gap_sample %}（前若干个：<span class="mono">{{ report.db_gap_sample|join(', ') }}</span>{% if report.db_gap_count > report.db_gap_sample|length %} …{% endif %}）{% endif %}。
+      </p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>本次入库水位</h2>
+    <dl class="kv">
+      <dt>库内记录总数</dt><dd class="mono">{{ report.watermark.count }}</dd>
+      <dt>库内最大序号 seq</dt><dd class="mono">{{ report.watermark.seq if report.watermark.seq is not none else '—' }}</dd>
+      <dt>库内最大记录 id</dt><dd class="mono">{{ report.watermark.record_id if report.watermark.record_id is not none else '—' }}</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>两份日志的文件截面</h2>
+    <table>
+      <thead><tr>
+        <th>文件</th><th>存在</th><th>inode</th><th>字节数</th><th>mtime_ns</th>
+        <th>完整行</th><th>完整字节</th><th>半行(B)</th><th>无 seq 行</th><th>所读前缀 SHA-256</th>
+      </tr></thead>
+      <tbody>
+      {% for f in report.snapshot.files %}
+        <tr>
+          <td class="mono">{{ f.name }}</td>
+          <td>{{ '是' if f.present else '否' }}</td>
+          <td class="mono">{{ f.inode if f.inode is not none else '—' }}</td>
+          <td class="mono">{{ f.size }}</td>
+          <td class="mono">{{ f.mtime_ns if f.mtime_ns is not none else '—' }}</td>
+          <td class="mono">{{ f.complete_lines }}</td>
+          <td class="mono">{{ f.complete_bytes }}</td>
+          <td class="mono">{{ f.half_line_bytes }}</td>
+          <td class="mono">{{ f.unparsed_lines }}</td>
+          <td class="mono" style="word-break:break-all">{{ f.sha256 if f.sha256 else '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted" style="margin-top:10px">
+      截面读取前后已复核 inode 与大小未变；读取后仅允许继续追加。
+      半行不参与核验，其字节按截面原样计入。
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>逐条核验（按序号升序）</h2>
+    <table>
+      <thead><tr>
+        <th>序号</th><th>结论</th><th>库内原文</th><th>日志完整行</th>
+        <th>出现文件</th><th>完整行次数</th><th>说明</th>
+      </tr></thead>
+      <tbody>
+      {% for item in report['items'] %}
+        <tr>
+          <td class="mono">{{ item.seq }}</td>
+          <td><span class="pill {{ item.verdict }}">{{ item.label }}</span></td>
+          <td class="mono raw">{{ item.db_raw }}</td>
+          <td class="mono raw {% if item.verdict == 'mismatch' %}diff{% endif %}">
+            {{ item.log_raw if item.log_raw is not none else '—' }}
+          </td>
+          <td class="mono">{{ item.log_files|join(', ') if item.log_files else '—' }}</td>
+          <td class="mono">{{ item.occurrences }}</td>
+          <td class="muted">{{ item.detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</main>
+</body>
+</html>

@@ -69,6 +69,63 @@
     </div>
   </div>
 
+  <div class="card" id="verify">
+    <h2>核验库内原文与设备日志</h2>
+    <p class="muted" style="margin-top:0">
+      按序号范围核验<b>已入库</b>记录（一次至多 {{ max_records }} 条）：逐条标明
+      “原文一致 / 同号异文 / 没有对应完整行，无法核验”。只比两份日志中以换行结束的
+      完整行，半行不参与；同号出现异文不判为一致。
+    </p>
+    <form method="post" action="{{ url_for('verify_records') }}" class="toolbar"
+          style="margin-bottom:14px">
+      <label class="muted">序号从
+        <input class="mono" type="number" name="seq_from" required
+               value="{{ last_seq if last_seq is not none else 1 }}"
+               style="width:110px;padding:7px 9px;border:1px solid var(--line);border-radius:7px">
+      </label>
+      <label class="muted">到
+        <input class="mono" type="number" name="seq_to" required
+               value="{{ last_seq if last_seq is not none else 1 }}"
+               style="width:110px;padding:7px 9px;border:1px solid var(--line);border-radius:7px">
+      </label>
+      <button class="btn-primary" type="submit">✓ 生成核验报告</button>
+      <span class="muted">核验只读库与日志，不推进采集进度；设备可继续写入。</span>
+    </form>
+
+    {% if reports %}
+    <table>
+      <thead><tr>
+        <th>报告</th><th>序号范围</th><th>核验条数</th><th>一致 / 异文 / 无法核验</th>
+        <th>生成时间(UTC)</th><th>当前状态</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for v in reports %}
+        <tr>
+          <td class="mono">#{{ v.id }}</td>
+          <td class="mono">{{ v.range['from'] }}–{{ v.range['to'] }}</td>
+          <td>{{ v.record_count }}</td>
+          <td>
+            <span class="pill ok">{{ v.summary.match }}</span>
+            <span class="pill rejected">{{ v.summary.mismatch }}</span>
+            <span class="pill error">{{ v.summary.missing }}</span>
+          </td>
+          <td class="mono">{{ v.created_at }}</td>
+          <td>
+            {% if v.status.fresh %}
+              <span class="pill ok">当前有效</span>
+            {% else %}
+              <span class="pill error">已过期</span>
+              <div class="muted" style="margin-top:4px">{{ v.status.reasons|join(' ') }}</div>
+            {% endif %}
+          </td>
+          <td><a href="{{ url_for('verify_detail', report_id=v.id) }}">重读报告</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<div class="empty">还没有核验报告</div>{% endif %}
+  </div>
+
   <div class="grid2">
     <div class="card">
       <h2>目录中的日志文件</h2>

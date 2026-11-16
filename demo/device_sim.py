@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -177,6 +176,36 @@ def cmd_illegal(data_dir: str, kind: str) -> None:
     with open(active, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
     print(f"[illegal:{kind}] 写入一条完整但非法的行（seq={seq}），采集时应整轮拒绝：{line}")
+
+
+def cmd_tamper(data_dir: str, seq: int, temp: float) -> None:
+    """追加一条同序号、不同内容的完整行（演示核验“同号异文”）。
+
+    这是对“设备日志被改写/重放”的一种模拟；不会改动库内记录。
+    """
+    os.makedirs(data_dir, exist_ok=True)
+    active, _ = _paths(data_dir)
+    line = json.dumps({"seq": seq, "ts": _now_iso(), "temp": temp}, ensure_ascii=False)
+    with open(active, "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    print(f"[tamper] 已向 {active} 追加同序号异内容完整行：{line}")
+    print("         网页核验该序号应显示“同号异文”，不能判为一致。")
+
+
+def cmd_truncate_tail(data_dir: str, nbytes: int) -> None:
+    """删掉 active.ndjson 末尾若干字节（演示半行/无法核验）。
+
+    仅用于演示；真实设备只追加。截断后采集端会按“文件被截断”防御性重读。
+    """
+    active, _ = _paths(data_dir)
+    if not os.path.exists(active):
+        raise SystemExit("[truncate-tail] active.ndjson 不存在。")
+    size = os.path.getsize(active)
+    if nbytes <= 0 or nbytes >= size:
+        raise SystemExit(f"[truncate-tail] 需 0 < 字节数 < 文件大小({size})。")
+    with open(active, "r+b") as fh:
+        fh.truncate(size - nbytes)
+    print(f"[truncate-tail] {active} 已从 {size} 截断到 {size - nbytes} 字节")
 
 
 def cmd_reset(data_dir: str) -> None:
@@ -328,6 +357,14 @@ def main() -> None:
 
     sub.add_parser("reset", help="清空目录内两份日志")
     sub.add_parser("seed", help="预置含半行与轮转文件的演示样本")
+
+    p = sub.add_parser("tamper", help="追加同序号异内容的完整行（演示核验异文）")
+    p.add_argument("seq", type=int)
+    p.add_argument("temp", type=float, nargs="?", default=99.9)
+
+    p = sub.add_parser("truncate-tail", help="删掉 active 末尾若干字节（演示半行）")
+    p.add_argument("nbytes", type=int)
+
     p = sub.add_parser("auto", help="一键演示剧本（需 Web 服务在运行）")
     p.add_argument("--base-url", default=os.environ.get("BASE_URL", "http://localhost:8000"))
 
@@ -346,6 +383,10 @@ def main() -> None:
         cmd_reset(args.data_dir)
     elif args.cmd == "seed":
         cmd_seed(args.data_dir)
+    elif args.cmd == "tamper":
+        cmd_tamper(args.data_dir, args.seq, args.temp)
+    elif args.cmd == "truncate-tail":
+        cmd_truncate_tail(args.data_dir, args.nbytes)
     elif args.cmd == "auto":
         cmd_auto(args.data_dir, args.base_url)
 

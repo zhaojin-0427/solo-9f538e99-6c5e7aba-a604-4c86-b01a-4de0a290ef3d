@@ -2,6 +2,7 @@
 
 把发酵设备持续追加的 NDJSON 温度日志，按“只增不丢、非法整轮拒绝”的规则整理成
 质控记录，提供网页查看、CSV 下载，并附带可演示**半行**与**日志轮转**的本地示例。
+移交前可按序号范围核验库内原文与设备日志，生成可重读、会过期的核验报告。
 
 ## 一、设备日志模型
 
@@ -42,20 +43,60 @@
 每次采集（含被拒绝的轮次）都在 `collect_runs` 表留痕，页面“最近采集轮次”可见
 状态、完整行数、新增/重复数、半行字节数与拒绝原因。
 
-## 三、目录结构
+## 三、移交前的核验（网页）
+
+质控员把温度明细移交前，需要核对**库内原文**与**设备仍保留的日志**是否一致。
+首页“核验库内原文与设备日志”区块可按序号范围发起核验：
+
+1. 输入起始/结束序号，一次最多核验 **300 条已入库记录**（按 seq 升序）。
+   范围内库内缺失的序号不参与逐条核验，单独汇总并给出前若干个。
+2. 逐条给出三种结论之一：
+   - **原文一致**：日志中该 seq 的全部完整行都与库内 `raw` 逐字节相同；
+   - **同号异文**：日志中该 seq 至少有一条完整行与库内不同。
+     **同一 seq 既有相同又有不同的行时仍判“同号异文”**，不能因为出现一次
+     相同内容就判为一致；页面同时给出出现次数与首个异文；
+   - **没有对应完整行，无法核验**：两份日志的完整行中都没有该 seq。
+     若该 seq 只出现在文件末尾半行里，也归入此类并在说明中注明。
+3. **半行不参与核验**：只比较以换行结束的完整行。文件末尾没有换行的半行
+   原样保留，其字节数计入截面但不会被当作证据。
+4. 报告固定两项截面信息，便于复核：
+   - **本次入库水位**：核验时库内记录总数、最大 seq、最大记录 id；
+   - **两份日志的文件截面**：每个文件是否存在、inode、字节数、mtime_ns、
+     完整行数、完整字节数、半行字节数、无法识别 seq 的完整行数，
+     以及所读前缀的 SHA-256。
+5. **自洽截面**：设备可在核验期间继续追加/轮转，采集也可继续。核验对同一
+   文件描述符读取前后各做一次 `fstat`，要求大小与 mtime 未变、读到的字节数
+   等于读取前大小；读完后按路径再复核仍指向同一 inode、未被替换/轮转/截断
+   （允许之后继续追加）。同时先读库水位、取完截面后复读水位，两次水位
+   （总数、最大 seq、最大记录 id）一致才发布报告，否则重试（有限次）；
+   仍无法自洽就**不发布**，页面提示原因。核验不写
+   `records` / `file_state` / `collect_runs`，**不推进采集进度**。
+6. 报告发布是**单事务**（报告头 + 逐条明细）：任何失败整体回滚，
+   不会留下半份结果。
+7. **已发布报告可重读**。库内新增记录，或所核日志的 inode/大小/mtime 变化后，
+   旧报告**仍然保留且内容不变**，但首页与报告页会标为**已过期**并列出原因；
+   需要最新结论时重新发起核验。
+
+相关接口：`POST /verify`（表单 `seq_from`、`seq_to`）、`GET /verify/<id>`。
+
+## 四、目录结构
 
 ```
 .
 ├── app/
-│   ├── __init__.py        # Flask 路由：页面 / 采集 / CSV / 演示重置 / 健康检查
+│   ├── __init__.py        # Flask 路由：页面 / 采集 / 核验 / CSV / 演示重置 / 健康检查
 │   ├── collector.py       # 采集核心：增量读取、半行切分、校验、事务、进度表
-│   └── templates/index.html
+│   ├── verify.py          # 核验核心：自洽截面、逐条比对、报告落库与过期状态
+│   └── templates/
+│       ├── index.html
+│       └── verify_report.html
 ├── demo/
-│   └── device_sim.py      # 设备模拟器（仅标准库）：write/half/rotate/illegal/seed/auto ...
+│   └── device_sim.py      # 设备模拟器（仅标准库）：write/half/rotate/illegal/seed/auto/tamper ...
 ├── tests/
-│   └── test_collector.py  # 15 个 unittest 用例（采集器 + Web 端到端）
+│   ├── test_collector.py  # 18 个 unittest 用例（采集器 + Web 端到端）
+│   └── test_verify.py     # 24 个 unittest 用例（核验核心 + 并发 + Web）
 ├── scripts/               # 本地启动 / 测试 / 演示的快捷脚本
-├── data/                  # Compose 挂载的日志目录（git 仅保留 .gitkeep）
+├── data/                  # Compose 挂载的日志目录（git 仅保留样本）
 ├── db/                    # SQLite 持久化目录（容器内 /instance）
 ├── run.py                 # 启动入口
 ├── Dockerfile
@@ -63,7 +104,7 @@
 └── requirements.txt
 ```
 
-## 四、用 Docker Compose 启动（推荐）
+## 五、用 Docker Compose 启动（推荐）
 
 ```bash
 docker compose up --build
@@ -87,12 +128,19 @@ python3 -I demo/device_sim.py --data-dir ./data seed     # 预置：.1 含半行
 # 浏览器点“立即采集” -> 5 条入库，页面显示半行 30 字节
 python3 -I demo/device_sim.py --data-dir ./data finish-half
 # 再点“立即采集” -> 半行补录为 seq 6
+
+# 方式 C：演示核验
+# 浏览器在“核验库内原文与设备日志”填序号范围（如 1 到 11）生成报告
+python3 -I demo/device_sim.py --data-dir ./data tamper 5 42.0
+# 再核验 -> seq 5 标为“同号异文”，旧报告标为“已过期”但仍可重读
+python3 -I demo/device_sim.py --data-dir ./data truncate-tail 20
+# 再核验 -> 末尾残缺行不参与，相关序号标为“没有对应完整行，无法核验”
 ```
 
 > 模拟器与应用代码分离：`demo/` 是独立目录、只用标准库，可单独拷贝到宿主机运行。
 > 半行辅助元数据 `.half.json` 仅模拟器使用，采集端只读 `active.ndjson*` 两个文件。
 
-## 五、不用 Docker 的本地运行
+## 六、不用 Docker 的本地运行
 
 需要 Python 3.11+ 与 Flask：
 
@@ -104,7 +152,7 @@ python3 -m pip install -r requirements.txt   # 或用虚拟环境
 ./scripts/demo.sh auto
 ```
 
-## 六、模拟器子命令
+## 七、模拟器子命令
 
 | 命令 | 作用 |
 | --- | --- |
@@ -114,10 +162,12 @@ python3 -m pip install -r requirements.txt   # 或用虚拟环境
 | `rotate` | 模拟归档：`active.ndjson` 重命名为 `.1`，再新建空 `active.ndjson` |
 | `illegal KIND` | 写一条完整但非法的行：`nan` / `bad-json` / `bad-ts` / `dup-conflict` |
 | `seed` | 预置含半行与轮转文件的演示样本 |
+| `tamper SEQ TEMP` | 追加一条同序号异内容的完整行（演示核验“同号异文”） |
+| `truncate-tail BYTES` | 删掉 `active.ndjson` 末尾若干字节（演示半行/无法核验） |
 | `reset` | 清空两份日志与半行元数据（数据库用网页“演示重置”清理） |
 | `auto` | 一键编排 8 步完整剧本并自动调用采集接口 |
 
-## 七、测试
+## 八、测试
 
 ```bash
 # 标准库 unittest；若 Flask 在非标准 site-packages，用 TEST_SITE 指定
@@ -130,8 +180,17 @@ python3 -m unittest discover -s tests -v
 双轮转与陈旧 inode 清理、inode 复用防御、各类非法行整轮拒绝且进度不变、
 序号断档/同序号异内容/同序号同内容、重启恢复、轮转与采集交错、Web 页面与 CSV。
 
-## 八、数据库表
+核验（`tests/test_verify.py`）覆盖：全一致报告与水位/截面字段、同号异文
+（含“相同+不同混杂”不判一致）、仅半行时无法核验、范围内库内缺号汇总、
+300 条上限、空范围/非法输入不发布、报告重读与不可变、库内新增或日志变化后
+过期但保留、截面读取重试与失败零副作用、核验不推进采集进度、
+核验与采集并发下报告完整且采集不漏不重、Web 端到端与 404。
+
+## 九、数据库表
 
 - `records`：质控记录（`seq` 唯一）、原文 `raw`、来源文件与 inode、采集时间。
 - `file_state`：按 inode 的采集偏移、观测大小、当前路径、更新时间。
 - `collect_runs`：每轮采集的状态（`ok`/`rejected`/`error`）与明细、错误原因。
+- `verify_reports`：核验报告头（序号范围、入库水位、日志截面 JSON、三类结论计数）。
+- `verify_items`：报告逐条明细（seq、结论、库内原文、日志异文、出现文件/次数、说明），
+  `UNIQUE(report_id, seq)`，随报告单事务写入。
